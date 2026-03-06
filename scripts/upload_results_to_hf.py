@@ -15,6 +15,7 @@ Usage:
   python scripts/upload_results_to_hf.py
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -147,25 +148,45 @@ def get_olmocr_gt() -> dict[str, str]:
     return _olmocr_gt_cache
 
 
+def _make_unique_id(sample_id: str, task: str, ground_truth: str) -> str:
+    """Append a short hash when multiple sub-elements share the same source file."""
+    tag = hashlib.sha256(f"{task}:{ground_truth}".encode()).hexdigest()[:8]
+    return f"{sample_id}::{tag}"
+
+
 def trim_results(data: dict) -> dict:
     """Keep only the fields needed for the explorer."""
     benchmark = data.get("benchmark", "")
     olmocr_gt = get_olmocr_gt() if benchmark == "olmocr" else {}
 
     trimmed_samples = []
+
+    id_counts: dict[str, int] = {}
+    for s in data.get("samples", []):
+        if s.get("dataset", "") in EXCLUDE_DATASETS:
+            continue
+        sid = s.get("sample_id", "")
+        id_counts[sid] = id_counts.get(sid, 0) + 1
+
     for s in data.get("samples", []):
         if s.get("dataset", "") in EXCLUDE_DATASETS:
             continue
 
         pred = s.get("prediction", "")
         gt = s.get("ground_truth", "")
+        sid = s.get("sample_id", "")
 
         if benchmark == "olmocr":
-            sid = s.get("sample_id", "")
             gt = olmocr_gt.get(sid, gt)
 
+        unique_id = (
+            _make_unique_id(sid, s.get("task", ""), gt)
+            if id_counts.get(sid, 1) > 1
+            else sid
+        )
+
         trimmed_samples.append({
-            "id": s.get("sample_id", ""),
+            "id": unique_id,
             "task": s.get("task", ""),
             "dataset": s.get("dataset", ""),
             "score": s.get("score"),
