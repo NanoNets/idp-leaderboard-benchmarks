@@ -1,0 +1,132 @@
+tasks:
+  - KIE
+  - OCR
+  - VQA
+  - TABLE
+
+datasets:
+  - handwritten_forms
+  - nanonets_kie
+  - ocr_handwriting
+  - ocr_handwriting_rotated
+  - digital_ocr_diacritics
+  - chartqa
+  - docvqa
+  - nanonets_longdocbench
+  - nanonets_small_sparse_structured_table
+  - nanonets_small_dense_structured_table
+  - nanonets_small_sparse_unstructured_table
+  - nanonets_long_dense_structured_table
+  - nanonets_long_sparse_structured_table
+  - nanonets_long_sparse_unstructured_table
+
+models:
+  - nanonets
+
+nanonets:
+  max_tokens: 15000
+  temperature: 0.0
+  template:
+    KIE: null
+    OCR: null
+    VQA: null
+    TABLE: null
+
+cache_dir: "./caches/nanonets/idp"
+max_samples_per_dataset: 1000
+max_workers: 4
+ignore_cache: false
+
+handwritten_forms:
+  hf_name: "Rasi1610/DeathSe43_44_checkbox"
+  test_split: "val"
+
+nanonets_kie:
+  hf_name: "nanonets/key_information_extraction"
+  test_split: "test"
+
+ocr_handwriting:
+  hf_name: "DataStudio/OCR_handwritting_HAT2023"
+  test_split: "train"
+  max_samples: 1000
+
+digital_ocr_diacritics:
+  hf_name: "ademax/ocr_scan_vi_01"
+  test_split: "test"
+  max_samples: 1000
+
+ocr_handwriting_rotated:
+  hf_name: "DataStudio/OCR_handwritting_HAT2023"
+  test_split: "train"
+  max_samples: 1000
+  rotation: true
+
+chartqa:
+  hf_name: "HuggingFaceM4/ChartQA"
+  test_split: "test"
+  max_samples: 1000
+
+docvqa:
+  hf_name: "lmms-lab/DocVQA"
+  test_split: "DocVQA"
+  max_samples: 1000
+
+nanonets_longdocbench:
+  hf_name: "Rasi1610/DeathSe43_44_checkbox"
+  test_split: "val"
+  additional_docs_count: 20
+  max_samples: 15
+
+nanonets_small_sparse_structured_table:
+  hf_name: nanonets/small_sparse_structured_table
+  test_split: "test"
+  max_samples: 1000
+
+nanonets_small_dense_structured_table:
+  hf_name: nanonets/small_dense_structured_table
+  test_split: "test"
+  max_samples: 1000
+
+nanonets_small_sparse_unstructured_table:
+  hf_name: nanonets/small_sparse_unstructured_table
+  test_split: "test"
+  max_samples: 1000
+
+nanonets_long_dense_structured_table:
+  hf_name: nanonets/long_dense_structured_table
+  test_split: "test"
+  max_samples: 1000
+
+nanonets_long_sparse_structured_table:
+  hf_name: nanonets/long_sparse_structured_table
+  test_split: "test"
+  max_samples: 1000
+
+nanonets_long_sparse_unstructured_table:
+  hf_name: nanonets/long_sparse_unstructured_table
+  test_split: "test"
+  max_samples: 1000
+
+KIE_default_template:
+  system_prompt: "You are a helpful assistant that extracts information from a document."
+  document_page_seperator: "Page {page_number}"
+  user_prompt: "Extract the following {fields} from the above document. If a field is not present, return ''. Return the output in a valid JSON format as {output_format}."
+
+OCR_default_template:
+  system_prompt: "You are an OCR model. Your task is to extract all visible and legible text from images with high accuracy and fidelity.\n\nOutput only the text that appears in the image.\n\nPreserve the natural reading order (e.g., top-to-bottom, left-to-right) as much as possible.\n\nDo not infer, summarize, or add information not explicitly visible in the image.\n\nIf the text is partially visible, extract as much as can be confidently read.\n\nMaintain original formatting when reasonable (e.g., line breaks, spacing).\n\nIf there is no readable text, respond with: \"\"\n\nYour primary goal is to be accurate, consistent, and faithful to the image content."
+  user_prompt: "Extract the text from the above document. Do not give any explanation. Just return the text."
+
+VQA_default_template:
+  system_prompt: "You are a helpful and intelligent Vision-Language Model (VLM). When a user shares an image, your primary task is to extract relevant visual and textual information from the image and answer the user's questions accurately based on the image content. If the user asks a question that cannot be answered from the image alone, return ''. Always ground your answers in the image content unless otherwise specified."
+  document_page_seperator: "Page {page_number}"
+  user_prompt: "Answer the following question based on the images shared: {question}. Do not give any explanation. Just return the answer. If the answer is a number, return it as a number and not a string (eg. Return 3 instead of Three)."
+
+CLASSIFICATION_default_template:
+  system_prompt: "You are a helpful assistant that classifies documents into one of the following categories: {labels}."
+  document_page_seperator: "Page {page_number}"
+  user_prompt: "Classify the following document into one of the following categories: {labels}. Do not give any explanation. Just return the category."
+
+TABLE_default_template:
+  system_prompt: "You are a helpful assistant that extracts Tables from a document."
+  document_page_seperator: "Page {page_number}"
+  user_prompt: "Extract the following columns {columns} from the above document. If a cell is not present, return ''. Return a valid JSON object in the following format (row-wise): {output_format}"

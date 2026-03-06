@@ -1,0 +1,10 @@
+# Model prediction caches (per-model, auto-created on first run)
+caches/*/
+!caches/.gitkeep
+
+ground_truth/
+results/
+__pycache__/
+*.pyc
+.env
+.venv/
