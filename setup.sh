@@ -92,23 +92,24 @@ fi
 # ── 5. Install docext (for IDP benchmark) ───────────────────────────────────
 
 DOCEXT_DIR="$REPO_ROOT/../docext"
-if [ -d "$DOCEXT_DIR" ]; then
-    info "Found docext at ${DOCEXT_DIR}, installing..."
-    pip install -e "$DOCEXT_DIR" --quiet
-    ok "docext installed"
-
-    # Comment out CLASSIFICATION task — not used by idp-leaderboard benchmarks
-    # and its dataset loading slows down startup.
-    DOCEXT_CFG="$DOCEXT_DIR/configs/benchmark.yaml"
-    if [ -f "$DOCEXT_CFG" ] && grep -q "^  - CLASSIFICATION" "$DOCEXT_CFG"; then
-        sed -i.bak 's/^  - CLASSIFICATION/  # - CLASSIFICATION/' "$DOCEXT_CFG" && rm -f "$DOCEXT_CFG.bak"
-        ok "Commented out CLASSIFICATION task in docext config"
-    fi
+if [ ! -d "$DOCEXT_DIR" ]; then
+    info "Cloning docext into ${DOCEXT_DIR}..."
+    git clone https://github.com/NanoNets/docext.git "$DOCEXT_DIR"
+    ok "docext cloned"
 else
-    warn "docext not found at ${DOCEXT_DIR}"
-    echo "    The IDP benchmark requires docext. To install later:"
-    echo "    git clone https://github.com/NanoNets/docext.git ../docext"
-    echo "    pip install -e ../docext"
+    ok "docext already present at ${DOCEXT_DIR}"
+fi
+
+info "Installing docext (editable)..."
+pip install -e "$DOCEXT_DIR" --quiet
+ok "docext installed"
+
+# Comment out CLASSIFICATION task — not used by idp-leaderboard benchmarks
+# and its dataset loading slows down startup.
+DOCEXT_CFG="$DOCEXT_DIR/configs/benchmark.yaml"
+if [ -f "$DOCEXT_CFG" ] && grep -q "^  - CLASSIFICATION" "$DOCEXT_CFG"; then
+    sed -i.bak 's/^  - CLASSIFICATION/  # - CLASSIFICATION/' "$DOCEXT_CFG" && rm -f "$DOCEXT_CFG.bak"
+    ok "Commented out CLASSIFICATION task in docext config"
 fi
 
 # ── 6. Install optional dependencies ────────────────────────────────────────
@@ -184,9 +185,10 @@ fi
 
 # ── 10. Check for OmniDocBench data ─────────────────────────────────────────
 
+OMNIDOC_DIR="$REPO_ROOT/../OmniDocBench"
 CHECKS_TOTAL=$((CHECKS_TOTAL + 1))
 OMNIDOC_FOUND=false
-for candidate in "$REPO_ROOT/../OmniDocBench/OmniDocBench.json" "$REPO_ROOT/OmniDocBench/OmniDocBench.json"; do
+for candidate in "$OMNIDOC_DIR/OmniDocBench.json" "$REPO_ROOT/OmniDocBench/OmniDocBench.json"; do
     if [ -f "$candidate" ]; then
         ok "OmniDocBench.json found at $(dirname "$candidate")"
         OMNIDOC_FOUND=true
@@ -195,9 +197,15 @@ for candidate in "$REPO_ROOT/../OmniDocBench/OmniDocBench.json" "$REPO_ROOT/Omni
     fi
 done
 if [ "$OMNIDOC_FOUND" = false ]; then
-    warn "OmniDocBench.json not found (needed for OmniDocBench benchmark)"
-    echo "    Clone it: git clone https://huggingface.co/datasets/opendatalab/OmniDocBench ../OmniDocBench"
-    echo "    Or pass --omnidoc-root when running benchmarks/omnidocbench/run.py"
+    info "Cloning OmniDocBench dataset into ${OMNIDOC_DIR}..."
+    if git clone https://huggingface.co/datasets/opendatalab/OmniDocBench "$OMNIDOC_DIR" 2>&1; then
+        ok "OmniDocBench cloned"
+        CHECKS_PASSED=$((CHECKS_PASSED + 1))
+    else
+        warn "OmniDocBench clone failed (non-fatal — only needed for OmniDocBench benchmark)"
+        echo "    You can clone it manually later:"
+        echo "    git clone https://huggingface.co/datasets/opendatalab/OmniDocBench ../OmniDocBench"
+    fi
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────
