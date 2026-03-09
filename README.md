@@ -10,76 +10,121 @@ Three benchmarks, each testing a different axis of document understanding:
 | **OmniDocBench** | Text extraction, formula recognition, table structure, reading order | 1,355 pages · 18K+ samples |
 | **IDP Core** | Key info extraction, OCR, table parsing, visual QA | 5,376 samples across 4 tasks |
 
+## Data Sources
+
+All benchmark data is fetched automatically — no manual downloads needed for most workflows.
+
+| Benchmark | Ground truth | Images / PDFs |
+|-----------|-------------|---------------|
+| **OlmOCR Bench** | JSONL from [`allenai/olmOCR-bench`](https://huggingface.co/datasets/allenai/olmOCR-bench) (auto-cached to `ground_truth/`) | PDFs + pre-rendered PNGs from HuggingFace |
+| **OmniDocBench** | `OmniDocBench.json` (local, from [`opendatalab/OmniDocBench`](https://huggingface.co/datasets/opendatalab/OmniDocBench)) | Local if available, falls back to HuggingFace URLs |
+| **IDP Core** | Loaded via `docext` from HuggingFace datasets | Embedded in dataset (base64) |
+
+OmniDocBench is the only benchmark that needs a local file (`OmniDocBench.json`). Clone the dataset repo or point `--omnidoc-root` at a directory containing it.
+
 ## Quick Start
+
+Requires **Python 3.10+**.
+
+**Automated setup** (recommended for first-time users):
+
+```bash
+./setup.sh
+```
+
+This creates a virtualenv, installs all dependencies (including Playwright for olmOCR evaluation), sets up a `.env` template, and validates the install.
+
+**Manual setup:**
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+python -m playwright install chromium   # needed for olmOCR evaluation
 ```
 
 For IDP benchmark, also install [docext](https://github.com/NanoNets/docext):
 ```bash
+git clone https://github.com/NanoNets/docext.git ../docext
 pip install -e ../docext
 ```
 
-For OlmOCR math rendering (KaTeX):
+For OmniDocBench, clone the dataset:
 ```bash
-python -m playwright install chromium
+git clone https://huggingface.co/datasets/opendatalab/OmniDocBench ../OmniDocBench
 ```
 
-## Running Prediction Caches
+Set your API keys (create a `.env` file or export directly):
+```bash
+export OPENAI_API_KEY="sk-..."
+export GOOGLE_API_KEY="AIza..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
 
-Every benchmark follows the same pattern: **run** populates the prediction cache, **evaluate** scores it.
+## Running Benchmarks via LiteLLM (GPT, Gemini, Claude, etc.)
+
+All three benchmarks support `--provider litellm --model-id <litellm_model_id>` for any model that LiteLLM can route to. This is the primary way to benchmark third-party models.
+
+LiteLLM model IDs follow the `provider/model-name` format, e.g.:
+- `openai/gpt-5.4-2026-03-05`
+- `gemini/gemini-3.1-pro-preview`
+- `anthropic/claude-sonnet-4-6`
 
 ### OlmOCR Bench
 
 ```bash
-# Generate predictions (cached to caches/{model}/olmocr/)
-python benchmarks/olmocr/run.py --model nanonets --workers 10
-
-# Evaluate raw predictions
-python benchmarks/olmocr/evaluate.py --model nanonets
-
-# Evaluate with post-processing (category-aware cleanup)
-python benchmarks/olmocr/evaluate.py --model nanonets --postprocess
+python benchmarks/olmocr/run.py \
+  --model gpt-5.4 \
+  --provider litellm \
+  --model-id openai/gpt-5.4-2026-03-05 \
+  --workers 25
 ```
 
 ### OmniDocBench
 
-Requires the OmniDocBench dataset. On EC2, use Docker for full eval (CDM metric needs xelatex).
-
 ```bash
-# Generate predictions
-python benchmarks/omnidocbench/run.py --model nanonets --workers 10
-
-# Full eval via Docker (EC2 recommended)
-python benchmarks/omnidocbench/evaluate.py --model nanonets --docker
-
-# Partial eval on host (no CDM metric)
-python benchmarks/omnidocbench/evaluate.py --model nanonets --host
+python benchmarks/omnidocbench/run.py \
+  --model gpt-5.4 \
+  --provider litellm \
+  --model-id openai/gpt-5.4-2026-03-05 \
+  --omnidoc-root ~/Nanobench/data/omnidocbench \
+  --workers 25
 ```
 
 ### IDP Core
 
-Requires `docext` installed locally.
-
 ```bash
-# Generate predictions
-python benchmarks/idp/run.py --model nanonets --workers 5
-
-# Evaluate
-python benchmarks/idp/evaluate.py --model nanonets
+python benchmarks/idp/run.py \
+  --model gpt-5.4 \
+  --provider litellm \
+  --model-id openai/gpt-5.4-2026-03-05 \
+  --workers 25
 ```
 
-## Adding a New Model
+## Running Benchmarks via Nanonets API
 
-1. Create `models/{name}.py` with a predict function (see `models/nanonets.py` or `models/litellm_model.py` for examples)
-2. Run all three benchmarks with `--model {name}`
-3. Results land in `results/{name}/`
+For the Nanonets model, use the default provider (no `--provider` flag needed):
 
-For LiteLLM-compatible APIs (OpenAI, Anthropic, Google, etc.), use the built-in adapter:
 ```bash
-python benchmarks/olmocr/run.py --model gpt-5.2 --adapter litellm
+python benchmarks/olmocr/run.py --model nanonets --workers 10
+python benchmarks/omnidocbench/run.py --model nanonets --workers 10
+python benchmarks/idp/run.py --model nanonets --workers 5
+```
+
+## Evaluation
+
+After prediction caches are populated, run evaluation:
+
+```bash
+# OlmOCR
+python benchmarks/olmocr/evaluate.py --model gpt-5.4
+python benchmarks/olmocr/evaluate.py --model gpt-5.4 --postprocess
+
+# OmniDocBench (Docker recommended for full CDM metric)
+python benchmarks/omnidocbench/evaluate.py --model gpt-5.4 --docker
+python benchmarks/omnidocbench/evaluate.py --model gpt-5.4 --host   # partial, no CDM
+
+# IDP
+python benchmarks/idp/evaluate.py --model gpt-5.4
 ```
 
 ## Publishing Results
@@ -87,39 +132,41 @@ python benchmarks/olmocr/run.py --model gpt-5.2 --adapter litellm
 After generating caches and evaluations:
 
 ```bash
-# Consolidate best results per model into results/
 python scripts/consolidate_results.py
-
-# Upload to HuggingFace (powers the Results Explorer on the leaderboard)
 python scripts/upload_results_to_hf.py
 ```
 
-The upload script reads from `results/{model}/{benchmark}.json` and pushes trimmed per-sample data to `shhdwi/idp-leaderboard-results` on HuggingFace.
+The upload script reads from `results/{model}/{benchmark}.json` and pushes trimmed per-sample data to [`shhdwi/idp-leaderboard-results`](https://huggingface.co/datasets/shhdwi/idp-leaderboard-results) on HuggingFace, powering the Results Explorer on the leaderboard.
 
 ## Directory Layout
 
 ```
-models/                     API clients (one per model)
+setup.sh                      Automated first-time setup
+models/
+  litellm_model.py            LiteLLM adapter (OpenAI, Anthropic, Google, etc.)
+  nanonets.py                 Nanonets OCR2+ API client
 benchmarks/
-  olmocr/                   OlmOCR Bench eval pipeline
-  omnidocbench/             OmniDocBench eval pipeline
-  idp/                      IDP Core eval pipeline
+  olmocr/                     OlmOCR Bench — run, evaluate, postprocess
+  omnidocbench/               OmniDocBench — run, evaluate, postprocess
+  idp/                        IDP Core — run, evaluate
 scripts/
-  consolidate_results.py    Merge best runs into canonical results/
-  upload_results_to_hf.py   Push results to HuggingFace dataset
-  validate_caches.py        Sanity-check prediction caches
-  migrate_caches.py         Restructure legacy cache layouts
-caches/{model}/             Prediction caches (gitignored, auto-created)
-ground_truth/               Auto-downloaded ground truth (gitignored)
-results/{model}/            Evaluation output (gitignored)
+  consolidate_results.py      Merge best runs into canonical results/
+  upload_results_to_hf.py     Push results to HuggingFace dataset
+  upload_idp_images.py        Upload IDP sample images to HuggingFace
+  validate_caches.py          Sanity-check prediction caches
+  migrate_caches.py           Restructure legacy cache layouts
+  rerun_empty.py              Re-run empty/failed cache entries
+caches/{model}/               Prediction caches (gitignored, auto-created)
+ground_truth/                 Auto-downloaded ground truth (gitignored)
+results/{model}/              Evaluation output JSON files
 ```
 
 ## Environment Variables
 
 | Variable | Required for | Description |
 |----------|-------------|-------------|
+| `OPENAI_API_KEY` | GPT models | OpenAI API key (auto-read by LiteLLM) |
+| `GOOGLE_API_KEY` | Gemini models | Google AI API key (auto-read by LiteLLM) |
+| `ANTHROPIC_API_KEY` | Claude models | Anthropic API key (auto-read by LiteLLM) |
 | `NANONETS_API_KEY` | Nanonets model | API key for extraction-api.nanonets.com |
-| `OPENAI_API_KEY` | GPT models | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Claude models | Anthropic API key |
-| `GOOGLE_API_KEY` | Gemini models | Google AI API key |
 | `HF_WRITE_TOKEN` | Publishing | HuggingFace write token for uploading results |

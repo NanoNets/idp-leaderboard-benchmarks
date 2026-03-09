@@ -290,7 +290,7 @@ def _nanobench_json_options(data, task: str) -> str | None:
 
 
 def _nanobench_prompt_mode(task: str) -> str | None:
-    if task in {"KIE", "OCR", "VQA", "CLASSIFICATION", "TABLE"}:
+    if task in {"KIE", "OCR", "VQA", "TABLE"}:
         return "replace"
     return None
 
