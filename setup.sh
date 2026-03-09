@@ -96,6 +96,14 @@ if [ -d "$DOCEXT_DIR" ]; then
     info "Found docext at ${DOCEXT_DIR}, installing..."
     pip install -e "$DOCEXT_DIR" --quiet
     ok "docext installed"
+
+    # Comment out CLASSIFICATION task — not used by idp-leaderboard benchmarks
+    # and its dataset loading slows down startup.
+    DOCEXT_CFG="$DOCEXT_DIR/configs/benchmark.yaml"
+    if [ -f "$DOCEXT_CFG" ] && grep -q "^  - CLASSIFICATION" "$DOCEXT_CFG"; then
+        sed -i.bak 's/^  - CLASSIFICATION/  # - CLASSIFICATION/' "$DOCEXT_CFG" && rm -f "$DOCEXT_CFG.bak"
+        ok "Commented out CLASSIFICATION task in docext config"
+    fi
 else
     warn "docext not found at ${DOCEXT_DIR}"
     echo "    The IDP benchmark requires docext. To install later:"
