@@ -8,7 +8,7 @@ Three benchmarks, each testing a different axis of document understanding:
 |-----------|--------------|-------|
 | **OlmOCR Bench** | Math, tables, reading order, text presence/absence | 1,403 pages · 7,010 tests |
 | **OmniDocBench** | Text extraction, formula recognition, table structure, reading order | 1,355 pages · 18K+ samples |
-| **IDP Core** | Key info extraction, OCR, table parsing, visual QA | 5,376 samples across 4 tasks |
+| **IDP Core** | Key info extraction, OCR, table parsing, visual QA | 6,406 samples across 4 tasks |
 
 ## Data Sources
 
@@ -133,10 +133,7 @@ After generating caches and evaluations:
 
 ```bash
 python scripts/consolidate_results.py
-python scripts/upload_results_to_hf.py
 ```
-
-The upload script reads from `results/{model}/{benchmark}.json` and pushes trimmed per-sample data to [`shhdwi/idp-leaderboard-results`](https://huggingface.co/datasets/shhdwi/idp-leaderboard-results) on HuggingFace, powering the Results Explorer on the leaderboard.
 
 ## Directory Layout
 
@@ -151,8 +148,6 @@ benchmarks/
   idp/                        IDP Core — run, evaluate
 scripts/
   consolidate_results.py      Merge best runs into canonical results/
-  upload_results_to_hf.py     Push results to HuggingFace dataset
-  upload_idp_images.py        Upload IDP sample images to HuggingFace
   validate_caches.py          Sanity-check prediction caches
   migrate_caches.py           Restructure legacy cache layouts
   rerun_empty.py              Re-run empty/failed cache entries
@@ -169,4 +164,3 @@ results/{model}/              Evaluation output JSON files
 | `GOOGLE_API_KEY` | Gemini models | Google AI API key (auto-read by LiteLLM) |
 | `ANTHROPIC_API_KEY` | Claude models | Anthropic API key (auto-read by LiteLLM) |
 | `NANONETS_API_KEY` | Nanonets model | API key for extraction-api.nanonets.com |
-| `HF_WRITE_TOKEN` | Publishing | HuggingFace write token for uploading results |
