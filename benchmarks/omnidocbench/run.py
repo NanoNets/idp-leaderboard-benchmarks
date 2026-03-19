@@ -26,6 +26,7 @@ from models.nanonets import extract_text
 _MODEL_TYPE = ""
 _PROVIDER = "nanonets"
 _LITELLM_MODEL_ID = ""
+_REQUEST_DELAY = 0.0
 
 OMNIDOC_EXTRACT_PROMPT = (
     "Extract the text from the above document as if you were reading it naturally.\n"
@@ -102,34 +103,53 @@ def _convert_worker(
                     prompt_mode="replace",
                     model_type=_MODEL_TYPE,
                 )
+            if "</think>" in text:
+                text = text.split("</think>", 1)[1].strip()
             if not text.strip():
                 raise RuntimeError("API returned empty content")
             out_file.parent.mkdir(parents=True, exist_ok=True)
             out_file.write_text(text, encoding="utf-8")
+            if _REQUEST_DELAY > 0:
+                time.sleep(_REQUEST_DELAY)
             return {"status": "ok", "image": image_path}
         except Exception as e:
             last_error = str(e)
             if attempt < max_retries:
-                time.sleep(2 ** attempt)
+                backoff = min(30 * (2 ** (attempt - 1)), 120)
+                time.sleep(backoff)
 
     return {"status": "error", "image": image_path, "error": last_error}
 
 
-def _call_litellm(image_path: str, local_img: Path | None) -> str:
-    from models.litellm_model import extract_text as litellm_extract
+OMNIDOC_FALLBACK_PROMPT = (
+    "Extract all text from this document image. "
+    "Preserve the structure, headings, paragraphs, and reading order. "
+    "Return tables as markdown tables. "
+    "Return equations in LaTeX using \\( \\) for inline and \\[ \\] for block math. "
+    "Do not guess content that is not visible."
+)
 
-    if local_img:
-        return litellm_extract(
-            file_path=str(local_img),
-            model_id=_LITELLM_MODEL_ID,
-            custom_instructions=OMNIDOC_EXTRACT_PROMPT,
-        )
-    file_url = HF_OMNIDOC_IMAGE_URL.format(image_path=image_path)
-    return litellm_extract(
-        file_url=file_url,
-        model_id=_LITELLM_MODEL_ID,
-        custom_instructions=OMNIDOC_EXTRACT_PROMPT,
+
+def _call_litellm(image_path: str, local_img: Path | None) -> str:
+    from models.litellm_model import (
+        ContentFilterError,
+        SAFETY_SETTINGS_BLOCK_NONE,
+        extract_text as litellm_extract,
     )
+
+    kwargs = dict(model_id=_LITELLM_MODEL_ID, custom_instructions=OMNIDOC_EXTRACT_PROMPT)
+    if local_img:
+        kwargs["file_path"] = str(local_img)
+    else:
+        kwargs["file_url"] = HF_OMNIDOC_IMAGE_URL.format(image_path=image_path)
+
+    kwargs["max_retries"] = 1
+    try:
+        return litellm_extract(**kwargs)
+    except ContentFilterError:
+        kwargs["custom_instructions"] = OMNIDOC_FALLBACK_PROMPT
+        kwargs["safety_settings"] = SAFETY_SETTINGS_BLOCK_NONE
+        return litellm_extract(**kwargs)
 
 
 def main():
@@ -144,12 +164,15 @@ def main():
                         help="API provider: nanonets (default) or litellm")
     parser.add_argument("--model-id", type=str, default="",
                         help="LiteLLM model identifier (e.g. anthropic/claude-sonnet-4-6)")
+    parser.add_argument("--delay", type=float, default=0.0,
+                        help="Seconds to sleep between successful API calls (rate limit protection)")
     args = parser.parse_args()
 
-    global _MODEL_TYPE, _PROVIDER, _LITELLM_MODEL_ID
+    global _MODEL_TYPE, _PROVIDER, _LITELLM_MODEL_ID, _REQUEST_DELAY
     _MODEL_TYPE = args.model_type
     _PROVIDER = args.provider
     _LITELLM_MODEL_ID = args.model_id
+    _REQUEST_DELAY = args.delay
 
     if _PROVIDER == "litellm" and not _LITELLM_MODEL_ID:
         print("ERROR: --model-id is required when using --provider litellm", file=sys.stderr)

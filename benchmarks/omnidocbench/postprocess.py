@@ -203,35 +203,31 @@ _STANDALONE_DOLLAR_RE = re.compile(
 )
 
 
+_INLINE_PAREN_RE = re.compile(
+    r"\\\((.*?)\\\)", re.DOTALL
+)
+
+_DISPLAY_ONLY_HINTS = re.compile(
+    r"\\(?:frac|sum|prod|int|iint|iiint|lim|begin|end|sqrt|"
+    r"binom|displaystyle|left|right|operatorname)",
+    re.IGNORECASE,
+)
+
+
 def _normalize_formula_delimiters(content: str) -> str:
     r"""Normalize formula delimiters for CDM compatibility.
 
     The upstream ``md_tex_filter`` recognises ``$$…$$`` and ``\[…\]``.
-    Both work, but we standardize ``\[…\]`` → ``$$…$$`` to avoid edge
-    cases in tokenize_latex.  Also promote standalone single-dollar
-    lines to ``$$…$$`` when they contain LaTeX commands.
+    Standardize ``\[…\]`` → ``$$…$$`` to avoid edge cases in
+    tokenize_latex.
     """
-    # Convert \[…\] blocks to $$…$$
     content = re.sub(
         r"\\\[(.*?)\\\]",
         lambda m: "$$" + m.group(1) + "$$",
         content,
         flags=re.DOTALL,
     )
-
-    # Promote standalone $…$ lines (entire line is a single formula)
-    lines = content.split("\n")
-    result = []
-    for line in lines:
-        stripped = line.strip()
-        m = _STANDALONE_DOLLAR_RE.match(stripped)
-        if m:
-            inner = m.group(1).strip()
-            if inner and _DISPLAY_FORMULA_HINTS.search(inner):
-                result.append("$$" + inner + "$$")
-                continue
-        result.append(line)
-    return "\n".join(result)
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +243,48 @@ def _remove_placeholders(content: str) -> str:
             continue
         kept.append(line)
     return "\n".join(kept)
+
+
+def _convert_md_tables_to_html(content: str) -> str:
+    """Convert markdown tables to HTML <table> for OmniDocBench TEDS eval.
+
+    Only converts if the prediction has NO HTML tables already.
+    """
+    if re.search(r"<table", content, re.IGNORECASE):
+        return content
+
+    md_table_re = re.compile(
+        r"(^\s*\|.*\|[ \t]*\n"
+        r"(?:\s*\|[\s\-:|]+\|[ \t]*\n)"
+        r"(?:\s*\|.*\|[ \t]*\n?)*)",
+        re.MULTILINE,
+    )
+
+    def _md_to_html(m):
+        block = m.group(0).strip()
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        if len(lines) < 2:
+            return m.group(0)
+
+        rows = []
+        is_header = True
+        for line in lines:
+            if re.match(r"\|[\s\-:|]+\|$", line):
+                is_header = False
+                continue
+            cells = [c.strip() for c in line.split("|")]
+            cells = [c for c in cells if c != "" or cells.index(c) not in (0, len(cells)-1)]
+            if not cells:
+                cells = [c.strip() for c in line.strip("|").split("|")]
+            tag = "th" if is_header else "td"
+            row_html = "<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in cells) + "</tr>"
+            rows.append(row_html)
+            if is_header:
+                is_header = False
+
+        return "\n<table>" + "".join(rows) + "</table>\n"
+
+    return md_table_re.sub(_md_to_html, content)
 
 
 def _collapse_blank_lines(text: str) -> str:

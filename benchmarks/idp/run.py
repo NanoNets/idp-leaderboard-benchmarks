@@ -40,6 +40,9 @@ sys.path.insert(0, str(REPO_ROOT))
 from models.nanonets import chat_messages, extract_json
 
 _MODEL_TYPE = ""
+_PROVIDER = "nanonets"
+_LITELLM_MODEL_ID = ""
+_REQUEST_DELAY = 0.0
 
 try:
     from docext.benchmark.benchmark import NanonetsIDPBenchmark
@@ -67,6 +70,74 @@ TASK_MESSAGE_BUILDERS = {
     "VQA": get_VQA_messages,
     "TABLE": get_TABLE_messages,
 }
+
+
+def _extract_json_from_response(raw: str) -> str:
+    """Strip thinking/reasoning tags and code fences to extract pure JSON."""
+    text = raw.strip()
+    if "</think>" in text:
+        text = text.split("</think>", 1)[1].strip()
+    if text.startswith("```"):
+        text = re.sub(r'^```\w*\n?', '', text)
+        text = re.sub(r'\n?```$', '', text).strip()
+    return text
+
+
+def _call_litellm_kie(data, max_retries: int) -> dict | list:
+    """Call LiteLLM for a KIE item — builds a vision message with the image and a JSON prompt."""
+    from models.litellm_model import complete as litellm_complete, _file_to_data_uri
+
+    image_path = data.image_paths[0]
+    field_names = [f.label for f in (data.fields or []) if f is not None]
+    labels_text = ", ".join(field_names) if field_names else "provided field labels"
+
+    data_uri = _file_to_data_uri(file_path=image_path)
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": data_uri}},
+            {"type": "text", "text": (
+                "You are doing key information extraction from a document. "
+                "Return ONLY a valid JSON object and nothing else. "
+                f"Use exactly these keys: {labels_text}. "
+                "Do not add extra keys. For missing values return empty string."
+            )},
+        ],
+    }]
+
+    last_error = ""
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw = litellm_complete(messages, _LITELLM_MODEL_ID, max_retries=1)
+            stripped = _extract_json_from_response(raw)
+            return json.loads(stripped)
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries:
+                backoff = min(30 * (2 ** (attempt - 1)), 120)
+                time.sleep(backoff)
+    raise RuntimeError(f"LiteLLM KIE failed after {max_retries} attempts: {last_error}")
+
+
+def _call_litellm_chat(messages: list, task: str, max_retries: int) -> str:
+    """Call LiteLLM with pre-built OpenAI-format messages from docext."""
+    from models.litellm_model import complete as litellm_complete
+
+    last_error = ""
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw = litellm_complete(messages, _LITELLM_MODEL_ID, max_retries=1)
+            if "</think>" in raw:
+                raw = raw.split("</think>", 1)[1].strip()
+            if task == "TABLE":
+                raw = _postprocess_table_response(raw)
+            return raw
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries:
+                backoff = min(30 * (2 ** (attempt - 1)), 120)
+                time.sleep(backoff)
+    raise RuntimeError(f"LiteLLM {task} failed after {max_retries} attempts: {last_error}")
 
 
 def _call_extract_kie(data, max_retries: int) -> dict | list:
@@ -111,6 +182,8 @@ def _postprocess_table_response(raw: str) -> str:
     JSON array-of-row-objects format expected by the benchmark scorer.
     """
     stripped = raw.strip()
+    if "</think>" in stripped:
+        stripped = stripped.split("</think>", 1)[1].strip()
 
     if stripped.startswith("```"):
         stripped = re.sub(r'^```\w*\n?', '', stripped)
@@ -318,6 +391,9 @@ def _call_chat(data, template: dict, task: str, max_retries: int) -> str:
 
     messages = _compress_messages(messages)
 
+    if _PROVIDER == "litellm":
+        return _call_litellm_chat(messages, task, max_retries)
+
     last_error = ""
     for attempt in range(1, max_retries + 1):
         try:
@@ -342,8 +418,12 @@ def _process_item(
 
     try:
         if task == "KIE":
-            endpoint = "extract_json"
-            response = _call_extract_kie(data, max_retries)
+            if _PROVIDER == "litellm":
+                endpoint = "litellm_kie"
+                response = _call_litellm_kie(data, max_retries)
+            else:
+                endpoint = "extract_json"
+                response = _call_extract_kie(data, max_retries)
         else:
             endpoint = "chat"
             response = _call_chat(data, template, task, max_retries)
@@ -361,6 +441,8 @@ def _process_item(
             json.dumps(cache_data, ensure_ascii=False, default=str),
             encoding="utf-8",
         )
+        if _REQUEST_DELAY > 0:
+            time.sleep(_REQUEST_DELAY)
         return {"status": "ok", "task": task, "dataset": dataset_name, "index": index}
     except Exception as e:
         return {
@@ -379,10 +461,23 @@ def main():
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--model-type", type=str, default="", help="API model_type field (e.g. nanonets-ocr-3)")
+    parser.add_argument("--provider", type=str, choices=["nanonets", "litellm"], default="nanonets",
+                        help="API provider: nanonets (default) or litellm")
+    parser.add_argument("--model-id", type=str, default="",
+                        help="LiteLLM model identifier (e.g. openai/gpt-5.4-2026-03-05)")
+    parser.add_argument("--delay", type=float, default=0.0,
+                        help="Seconds to sleep between successful API calls (rate limit protection)")
     args = parser.parse_args()
 
-    global _MODEL_TYPE
+    global _MODEL_TYPE, _PROVIDER, _LITELLM_MODEL_ID, _REQUEST_DELAY
     _MODEL_TYPE = args.model_type
+    _PROVIDER = args.provider
+    _LITELLM_MODEL_ID = args.model_id
+    _REQUEST_DELAY = args.delay
+
+    if _PROVIDER == "litellm" and not _LITELLM_MODEL_ID:
+        print("ERROR: --model-id is required when using --provider litellm", file=sys.stderr)
+        sys.exit(1)
 
     config_path = Path(args.config) if args.config else Path(__file__).parent / "config.yaml"
     with open(config_path) as f:

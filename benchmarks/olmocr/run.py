@@ -29,6 +29,7 @@ from models.nanonets import extract_text, extract_with_bbox, chat
 _MODEL_TYPE = ""
 _PROVIDER = "nanonets"
 _LITELLM_MODEL_ID = ""
+_REQUEST_DELAY = 0.0
 
 # ---------------------------------------------------------------------------
 # Prompts (inlined to keep this file self-contained)
@@ -183,21 +184,55 @@ def call_api(pdf_path: str, category: str) -> tuple[str, list | None]:
     return text, None
 
 
+OLMOCR_FALLBACK_PROMPT = (
+    "Extract all text from this document image. "
+    "Preserve the structure, headings, paragraphs, and reading order. "
+    "Convert equations to LaTeX. Convert tables to markdown tables. "
+    "Do not guess content that is not visible."
+)
+
+
 def _call_api_litellm(pdf_path: str, category: str, config: dict) -> str:
-    from models.litellm_model import chat as litellm_chat, extract_text as litellm_extract
+    from models.litellm_model import (
+        ContentFilterError,
+        SAFETY_SETTINGS_BLOCK_NONE,
+        chat as litellm_chat,
+        extract_text as litellm_extract,
+    )
 
     pdf_stem = Path(pdf_path).stem
 
     if config["mode"] == "chat":
         png_url = HF_PNG_URL.format(category=category, stem=pdf_stem)
-        return litellm_chat(image_url=png_url, prompt=config["prompt"], model_id=_LITELLM_MODEL_ID)
+        try:
+            return litellm_chat(
+                image_url=png_url, prompt=config["prompt"], model_id=_LITELLM_MODEL_ID,
+                max_retries=1,
+            )
+        except ContentFilterError:
+            return litellm_chat(
+                image_url=png_url, prompt=OLMOCR_FALLBACK_PROMPT,
+                model_id=_LITELLM_MODEL_ID, safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
+                max_retries=1,
+            )
 
     prompt = config.get("custom_instructions", "") or (
         "Convert this document page to markdown. "
         "Preserve all text, tables, and equations exactly as shown."
     )
     pdf_url = HF_PDF_URL.format(pdf_path=pdf_path)
-    return litellm_extract(file_url=pdf_url, model_id=_LITELLM_MODEL_ID, custom_instructions=prompt)
+    try:
+        return litellm_extract(
+            file_url=pdf_url, model_id=_LITELLM_MODEL_ID, custom_instructions=prompt,
+            max_retries=1,
+        )
+    except ContentFilterError:
+        return litellm_extract(
+            file_url=pdf_url, model_id=_LITELLM_MODEL_ID,
+            custom_instructions=OLMOCR_FALLBACK_PROMPT,
+            safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
+            max_retries=1,
+        )
 
 
 def _api_worker(pdf_path: str, category: str, raw_md: Path, raw_bbox: Path | None, max_retries: int) -> dict:
@@ -208,17 +243,22 @@ def _api_worker(pdf_path: str, category: str, raw_md: Path, raw_bbox: Path | Non
     for attempt in range(1, max_retries + 1):
         try:
             text, elements = call_api(pdf_path, category)
+            if "</think>" in text:
+                text = text.split("</think>", 1)[1].strip()
             if not text.strip():
                 raise RuntimeError("API returned empty content")
             raw_md.parent.mkdir(parents=True, exist_ok=True)
             raw_md.write_text(text, encoding="utf-8")
             if elements is not None and raw_bbox is not None:
                 raw_bbox.write_text(json.dumps(elements, ensure_ascii=False), encoding="utf-8")
+            if _REQUEST_DELAY > 0:
+                time.sleep(_REQUEST_DELAY)
             return {"status": "ok", "pdf": pdf_path, "category": category}
         except Exception as e:
             last_error = str(e)
             if attempt < max_retries:
-                time.sleep(2 ** attempt)
+                backoff = min(30 * (2 ** (attempt - 1)), 120)
+                time.sleep(backoff)
 
     # Fallback: try chat mode via pre-rendered PNG
     config = CATEGORY_CONFIG.get(category, {})
@@ -226,7 +266,21 @@ def _api_worker(pdf_path: str, category: str, raw_md: Path, raw_bbox: Path | Non
         try:
             pdf_stem = Path(pdf_path).stem
             png_url = HF_PNG_URL.format(category=category, stem=pdf_stem)
-            text = chat(image_url=png_url, prompt=OLMOCR_CHAT, model_type=_MODEL_TYPE)
+            if _PROVIDER == "litellm":
+                from models.litellm_model import (
+                    SAFETY_SETTINGS_BLOCK_NONE,
+                    chat as litellm_chat,
+                )
+                text = litellm_chat(
+                    image_url=png_url, prompt=OLMOCR_FALLBACK_PROMPT,
+                    model_id=_LITELLM_MODEL_ID,
+                    safety_settings=SAFETY_SETTINGS_BLOCK_NONE,
+                    max_retries=1,
+                )
+            else:
+                text = chat(image_url=png_url, prompt=OLMOCR_CHAT, model_type=_MODEL_TYPE)
+            if "</think>" in text:
+                text = text.split("</think>", 1)[1].strip()
             if text.strip():
                 raw_md.parent.mkdir(parents=True, exist_ok=True)
                 raw_md.write_text(text, encoding="utf-8")
@@ -252,12 +306,15 @@ def main():
                         help="API provider: nanonets (default) or litellm")
     parser.add_argument("--model-id", type=str, default="",
                         help="LiteLLM model identifier (e.g. anthropic/claude-sonnet-4-6)")
+    parser.add_argument("--delay", type=float, default=0.0,
+                        help="Seconds to sleep between successful API calls (rate limit protection)")
     args = parser.parse_args()
 
-    global _MODEL_TYPE, _PROVIDER, _LITELLM_MODEL_ID
+    global _MODEL_TYPE, _PROVIDER, _LITELLM_MODEL_ID, _REQUEST_DELAY
     _MODEL_TYPE = args.model_type
     _PROVIDER = args.provider
     _LITELLM_MODEL_ID = args.model_id
+    _REQUEST_DELAY = args.delay
 
     if _PROVIDER == "litellm" and not _LITELLM_MODEL_ID:
         print("ERROR: --model-id is required when using --provider litellm", file=sys.stderr)

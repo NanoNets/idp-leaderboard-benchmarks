@@ -31,9 +31,21 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TEMPERATURE = 0.0
-DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_BACKOFF = 10.0
-DEFAULT_RETRY_MAX = 120.0
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_RETRY_BACKOFF = 30.0
+DEFAULT_RETRY_MAX = 180.0
+
+SAFETY_SETTINGS_BLOCK_NONE = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+]
+
+
+class ContentFilterError(RuntimeError):
+    """Raised when the model response is blocked by a content/safety filter."""
 
 
 def _ensure_litellm():
@@ -51,7 +63,8 @@ def complete(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
     max_retries: int = DEFAULT_MAX_RETRIES,
-    timeout: int = 300,
+    timeout: int = 600,
+    safety_settings: list[dict] | None = None,
 ) -> str:
     """Call a model via LiteLLM and return the response text.
 
@@ -62,6 +75,10 @@ def complete(
         temperature: Sampling temperature.
         max_retries: Number of retry attempts for transient errors.
         timeout: Request timeout in seconds.
+        safety_settings: Optional Gemini safety settings list.
+
+    Raises:
+        ContentFilterError: When the response is blocked by a content/safety filter.
     """
     litellm = _ensure_litellm()
 
@@ -73,12 +90,25 @@ def complete(
         "drop_params": True,
         "timeout": timeout,
     }
+    if safety_settings:
+        call_kwargs["safety_settings"] = safety_settings
+
+    if "hosted_vllm" in model_id.lower() and "qwen3" in model_id.lower():
+        call_kwargs["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
 
     last_exc = None
     for attempt in range(1, max_retries + 1):
         try:
             response = litellm.completion(**call_kwargs)
+            if response.choices[0].finish_reason == "content_filter":
+                raise ContentFilterError(
+                    f"Response blocked by content filter (model={model_id})"
+                )
             return response.choices[0].message.content or ""
+        except ContentFilterError:
+            raise
         except Exception as exc:
             last_exc = exc
             status = getattr(exc, "status_code", None)
@@ -113,9 +143,22 @@ def _file_to_data_uri(
         content_type = resp.headers.get("content-type", "image/png")
         if "pdf" in content_type:
             return _pdf_bytes_to_data_uri(resp.content, page_num, dpi)
+        raw_b64 = base64.b64encode(resp.content).decode()
+        if len(raw_b64) > MAX_PAYLOAD_BYTES:
+            from PIL import Image
+            img = Image.open(io.BytesIO(resp.content))
+            w, h = img.size
+            if max(w, h) > MAX_IMAGE_DIM:
+                scale = MAX_IMAGE_DIM / max(w, h)
+                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=80)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            return f"data:image/jpeg;base64,{b64}"
         mime = "image/jpeg" if "jpeg" in content_type or "jpg" in content_type else "image/png"
-        b64 = base64.b64encode(resp.content).decode()
-        return f"data:{mime};base64,{b64}"
+        return f"data:{mime};base64,{raw_b64}"
 
     if file_path:
         file_path = Path(file_path)
@@ -132,8 +175,12 @@ def _file_to_data_uri(
     raise ValueError("Provide either file_path or file_url")
 
 
+MAX_IMAGE_DIM = 2048
+MAX_PAYLOAD_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
 def _pdf_bytes_to_data_uri(pdf_bytes: bytes, page_num: int = 0, dpi: int = 200) -> str:
-    """Render a PDF page to a PNG data URI."""
+    """Render a PDF page to a data URI, compressing large images to stay within API limits."""
     import fitz
     from PIL import Image
 
@@ -142,8 +189,23 @@ def _pdf_bytes_to_data_uri(pdf_bytes: bytes, page_num: int = 0, dpi: int = 200) 
     pix = page.get_pixmap(dpi=dpi)
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     doc.close()
+
+    w, h = img.size
+    if max(w, h) > MAX_IMAGE_DIM:
+        scale = MAX_IMAGE_DIM / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
+    if buf.tell() > MAX_PAYLOAD_BYTES:
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        if buf.tell() > MAX_PAYLOAD_BYTES:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=60)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return f"data:image/jpeg;base64,{b64}"
+
     b64 = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
 
@@ -157,6 +219,7 @@ def extract_text(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
     max_retries: int = DEFAULT_MAX_RETRIES,
+    safety_settings: list[dict] | None = None,
     **kwargs,
 ) -> str:
     """Convert a document to markdown text using a vision LLM via LiteLLM.
@@ -179,7 +242,8 @@ def extract_text(
         }
     ]
     return complete(messages, model_id, max_tokens=max_tokens,
-                    temperature=temperature, max_retries=max_retries)
+                    temperature=temperature, max_retries=max_retries,
+                    safety_settings=safety_settings)
 
 
 def chat(
@@ -193,6 +257,7 @@ def chat(
     temperature: float = DEFAULT_TEMPERATURE,
     max_retries: int = DEFAULT_MAX_RETRIES,
     dpi: int = 200,
+    safety_settings: list[dict] | None = None,
     **kwargs,
 ) -> str:
     """Chat with a vision model about a document image via LiteLLM.
@@ -213,4 +278,5 @@ def chat(
         }
     ]
     return complete(messages, model_id, max_tokens=max_tokens,
-                    temperature=temperature, max_retries=max_retries)
+                    temperature=temperature, max_retries=max_retries,
+                    safety_settings=safety_settings)

@@ -121,12 +121,11 @@ VQA_default_template:
   document_page_seperator: "Page {page_number}"
   user_prompt: "Answer the following question based on the images shared: {question}. Do not give any explanation. Just return the answer. If the answer is a number, return it as a number and not a string (eg. Return 3 instead of Three)."
 
-CLASSIFICATION_default_template:
-  system_prompt: "You are a helpful assistant that classifies documents into one of the following categories: {labels}."
-  document_page_seperator: "Page {page_number}"
-  user_prompt: "Classify the following document into one of the following categories: {labels}. Do not give any explanation. Just return the category."
-
 TABLE_default_template:
   system_prompt: "You are a helpful assistant that extracts Tables from a document."
   document_page_seperator: "Page {page_number}"
   user_prompt: "Extract the following columns {columns} from the above document. If a cell is not present, return ''. Return a valid JSON object in the following format (row-wise): {output_format}"
+
+CLASSIFICATION_default_template:
+  system_prompt: "You are a helpful assistant that classifies documents."
+  user_prompt: "Classify the above document into one of the following categories: {categories}. Return only the category name."
