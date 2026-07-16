@@ -164,3 +164,7 @@ results/{model}/              Evaluation output JSON files
 | `GOOGLE_API_KEY` | Gemini models | Google AI API key (auto-read by LiteLLM) |
 | `ANTHROPIC_API_KEY` | Claude models | Anthropic API key (auto-read by LiteLLM) |
 | `NANONETS_API_KEY` | Nanonets model | API key for extraction-api.nanonets.com |
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
